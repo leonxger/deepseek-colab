@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 340" width="800" height="340" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif">
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/></marker></defs>
+<rect width="800" height="340" rx="14" fill="#0d1117"/>
+<rect x="24" y="104" width="220" height="190" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1.5"/>
+<text x="42" y="134" font-size="16" fill="#e6edf3" text-anchor="start" font-weight="600">Your computer</text>
+<text x="42" y="160" font-size="13" fill="#2bb5a5" text-anchor="start" font-weight="400">python3 llm.py up</text>
+<text x="42" y="186" font-size="13" fill="#e6edf3" text-anchor="start" font-weight="400">OpenAI endpoint</text>
+<text x="42" y="204" font-size="13" fill="#8b949e" text-anchor="start" font-weight="400">127.0.0.1:18080/v1</text>
+<text x="42" y="234" font-size="13" fill="#8b949e" text-anchor="start" font-weight="400">opencode, curl, any</text>
+<text x="42" y="252" font-size="13" fill="#8b949e" text-anchor="start" font-weight="400">OpenAI-compatible app</text>
+<text x="42" y="278" font-size="12" fill="#8b949e" text-anchor="start" font-weight="400">stops the GPU when idle</text>
+<line x1="250" x2="318" y1="199" y2="199" stroke="#8b949e" stroke-width="1.5" marker-start="url(#a)" marker-end="url(#a)"/>
+<text x="284" y="186" font-size="12" fill="#8b949e" text-anchor="middle" font-weight="400">SSH tunnel</text>
+<text x="284" y="220" font-size="12" fill="#8b949e" text-anchor="middle" font-weight="400">Colab CLI</text>
+<rect x="324" y="70" width="452" height="252" rx="10" fill="#0d1117" stroke="#30363d" stroke-width="1.5"/>
+<text x="342" y="98" font-size="16" fill="#e6edf3" text-anchor="start" font-weight="600">Google Colab G4 VM</text>
+<rect x="342" y="114" width="196" height="190" rx="10" fill="#161b22" stroke="#56c271" stroke-width="1.5"/>
+<text x="358" y="142" font-size="15" fill="#56c271" text-anchor="start" font-weight="600">GPU, 96 GB</text>
+<text x="358" y="170" font-size="13" fill="#e6edf3" text-anchor="start" font-weight="400">attention, dense layers</text>
+<text x="358" y="195" font-size="13" fill="#e6edf3" text-anchor="start" font-weight="400">~7,800 hottest experts</text>
+<text x="358" y="220" font-size="13" fill="#e6edf3" text-anchor="start" font-weight="400">DSpark draft model</text>
+<text x="358" y="245" font-size="13" fill="#e6edf3" text-anchor="start" font-weight="400">KV cache, 2 x 262K</text>
+<text x="358" y="270" font-size="13" fill="#e6edf3" text-anchor="start" font-weight="400">image encoder</text>
+<rect x="590" y="114" width="168" height="190" rx="10" fill="#161b22" stroke="#4a9bd1" stroke-width="1.5"/>
+<text x="606" y="142" font-size="15" fill="#4a9bd1" text-anchor="start" font-weight="600">RAM, 190 GB</text>
+<text x="606" y="170" font-size="13" fill="#e6edf3" text-anchor="start" font-weight="400">Engram, 110.6 GB</text>
+<text x="606" y="195" font-size="13" fill="#e6edf3" text-anchor="start" font-weight="400">all other experts</text>
+<text x="606" y="220" font-size="13" fill="#8b949e" text-anchor="start" font-weight="400">(pinned memory)</text>
+<line x1="588" x2="542" y1="226" y2="226" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a)"/>
+<text x="565" y="214" font-size="12" fill="#8b949e" text-anchor="middle" font-weight="400">miss</text>
+<rect x="392" y="14" width="316" height="40" rx="20" fill="#0d1117" stroke="#9b7fd4" stroke-width="1.5"/>
+<text x="550" y="39" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="400">Hugging Face: about 260 GB per start, ~3.5 GB/s</text>
+<line x1="550" x2="550" y1="56" y2="68" stroke="#8b949e" stroke-width="1.5" marker-end="url(#a)"/>
+</svg>

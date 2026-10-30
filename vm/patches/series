@@ -1,0 +1,23 @@
+# applied in this order to llama.cpp b11963 (later patches anchor on code from earlier ones)
+apply_pr30966.py
+patch_e.py
+patch_ced.py
+patch_cedspec.py
+patch_dsparkfix.py
+patch_fuse.py
+patch_mmvf.py
+patch_fuse2.py
+patch_prefetch.py
+patch_copybatch.py
+patch_predict.py
+patch_devcache.py
+patch_hcfuse.py
+patch_cedmm.py
+patch_peakdump.py
+patch_cbdiet.py
+patch_asyncin.py
+patch_chunk1.py
+patch_seqrm.py
+patch_align.py
+patch_dma.py
+patch_dmaalign.py

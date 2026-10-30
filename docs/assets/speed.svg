@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 380" width="800" height="380" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif">
+<rect width="800" height="380" rx="14" fill="#0d1117"/>
+<text x="30" y="40" font-size="20" fill="#e6edf3" text-anchor="start" font-weight="600">Decode speed, tokens per second</text>
+<text x="30" y="62" font-size="13" fill="#8b949e" text-anchor="start" font-weight="400">one answer stream at reasoning effort max, each step measured lossless against the one before</text>
+<line x1="50" x2="770" y1="300" y2="300" stroke="#30363d" stroke-width="1"/>
+<line x1="50" x2="770" y1="113.2" y2="113.2" stroke="#f2c84b" stroke-width="1.5" stroke-dasharray="5 5"/>
+<text x="54" y="105.16923076923078" font-size="12" fill="#f2c84b" text-anchor="start" font-weight="400">default profile (262K context + images): 105.6</text>
+<path d="M60,300 V227.0 Q60,223.0 64,223.0 H142 Q146,223.0 146,227.0 V300 Z" fill="#5d6d80"/>
+<text x="103.0" y="247.03846153846155" font-size="15" fill="#e6edf3" text-anchor="middle" font-weight="600">43.5</text>
+<text x="103.0" y="322" font-size="13" fill="#8b949e" text-anchor="middle" font-weight="400">first run</text>
+<text x="103.0" y="339" font-size="13" fill="#8b949e" text-anchor="middle" font-weight="400">IQ2_XS</text>
+<path d="M180,300 V180.2 Q180,176.2 184,176.2 H262 Q266,176.2 266,180.2 V300 Z" fill="#5d6d80"/>
+<text x="223.0" y="200.15384615384616" font-size="15" fill="#e6edf3" text-anchor="middle" font-weight="600">70</text>
+<text x="223.0" y="322" font-size="13" fill="#8b949e" text-anchor="middle" font-weight="400">+ GPU expert</text>
+<text x="223.0" y="339" font-size="13" fill="#8b949e" text-anchor="middle" font-weight="400">cache</text>
+<path d="M300,300 V150.1 Q300,146.1 304,146.1 H382 Q386,146.1 386,150.1 V300 Z" fill="#5d6d80"/>
+<text x="343.0" y="170.07692307692307" font-size="15" fill="#e6edf3" text-anchor="middle" font-weight="600">87</text>
+<text x="343.0" y="322" font-size="13" fill="#8b949e" text-anchor="middle" font-weight="400">+ draft</text>
+<text x="343.0" y="339" font-size="13" fill="#8b949e" text-anchor="middle" font-weight="400">model</text>
+<path d="M420,300 V127.1 Q420,123.1 424,123.1 H502 Q506,123.1 506,127.1 V300 Z" fill="#5d6d80"/>
+<text x="463.0" y="147.07692307692307" font-size="15" fill="#e6edf3" text-anchor="middle" font-weight="600">100</text>
+<text x="463.0" y="322" font-size="13" fill="#8b949e" text-anchor="middle" font-weight="400">+ fused</text>
+<text x="463.0" y="339" font-size="13" fill="#8b949e" text-anchor="middle" font-weight="400">kernels</text>
+<path d="M540,300 V109.4 Q540,105.4 544,105.4 H622 Q626,105.4 626,109.4 V300 Z" fill="#5d6d80"/>
+<text x="583.0" y="129.3846153846154" font-size="15" fill="#e6edf3" text-anchor="middle" font-weight="600">110</text>
+<text x="583.0" y="322" font-size="13" fill="#8b949e" text-anchor="middle" font-weight="400">+ device</text>
+<text x="583.0" y="339" font-size="13" fill="#8b949e" text-anchor="middle" font-weight="400">cache lookup</text>
+<path d="M660,300 V94.0 Q660,90.0 664,90.0 H742 Q746,90.0 746,94.0 V300 Z" fill="#2bb5a5"/>
+<text x="703.0" y="79.99230769230769" font-size="17" fill="#e6edf3" text-anchor="middle" font-weight="700">118.7</text>
+<text x="703.0" y="322" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="400">+ aligned</text>
+<text x="703.0" y="339" font-size="13" fill="#e6edf3" text-anchor="middle" font-weight="400">copies</text>
+<text x="770" y="366" font-size="11" fill="#8b949e" text-anchor="end" font-weight="400">milestones measured on different G4 VMs (they differ by about 6%)</text>
+</svg>
