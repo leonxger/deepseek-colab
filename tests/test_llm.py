@@ -342,8 +342,9 @@ class ProxyTests(unittest.TestCase):
         p = c.serve()
         r = c.llm('up')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        for line in ('Starting a Colab G4 GPU', 'G4 GPU allocated', 'model downloaded (138 GB)', 'model loaded onto the GPU',
-                     'warmup answer done', 'Ready after 0:', 'Base URL   http://127.0.0.1:%d/v1' % c.port, 'API key    ' + c.key):
+        for line in ('Starting a Colab G4 GPU', 'G4 GPU allocated', 'Basalt v0.5.7 built', 'model downloaded (Basalt pack)',
+                     'model loaded onto the GPU + RAM', 'RAM freed, cold experts pinned', 'warmup answer done',
+                     'Ready after 0:', 'Base URL   http://127.0.0.1:%d/v1' % c.port, 'API key    ' + c.key):
             self.assertIn(line, r.stdout)
         self.assertNotIn('\x1b[', r.stdout)
         again = c.llm('up')
@@ -365,7 +366,7 @@ class ProxyTests(unittest.TestCase):
         c = Case(self)
         r = c.llm('up', '--fast')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn('131,072 tokens per request · image input off · about 118.7 tok/s', r.stdout)
+        self.assertIn('131,072 tokens per request · image input off · about 160.4 tok/s', r.stdout)
         lock = json.loads(read(os.path.join(c.state, 'serve.lock')))
         self.assertEqual((lock['detached'], lock['choice']), (True, [False, 131072]))
         self.assertEqual(json.loads(read(c.res('boot_check.json')))['env']['CTX'], '262144')
@@ -409,6 +410,23 @@ class ProxyTests(unittest.TestCase):
         msgs = [{'role': 'user', 'content': 'hi'}]
         self.assertEqual([json.loads(c.req(body={'model': m, 'messages': msgs}).raw)['effort'] for m in ('ds41', 'ds41-max')], ['high', 'max'])
         self.assertIn('hard stop 2 h', c.llm('settings').stderr)
+        self.assertEqual(c.llm('down').returncode, 0)
+        c.wait(lambda: not procs_with(c.dir, '--detached'), 10)
+        c.assert_all_stopped(self)
+
+    def test_07d_llama_legacy_fallback(self):
+        c = Case(self)
+        r = c.llm('up', '--llama', '--fast')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for line in ('model downloaded (138 GB)', 'model loaded onto the GPU', 'Engine     llama.cpp (ISTA IQ2_XXS)', '118.7 tok/s'):
+            self.assertIn(line, r.stdout)
+        lock = json.loads(read(os.path.join(c.state, 'serve.lock')))
+        self.assertEqual((lock['detached'], lock['choice'], lock['engine']), (True, [False, 131072], 'llama'))
+        env = json.loads(read(c.res('boot_check.json')))['env']
+        self.assertEqual((env['ENGINE'], env['MOE_CACHE_MIB'], env['DYN'], env['DMA']), ('llama', '74231', '166', '1'))
+        mismatch = c.llm('up', '--fast')
+        self.assertNotEqual(mismatch.returncode, 0)
+        self.assertIn('llama.cpp', mismatch.stderr)
         self.assertEqual(c.llm('down').returncode, 0)
         c.wait(lambda: not procs_with(c.dir, '--detached'), 10)
         c.assert_all_stopped(self)
@@ -569,18 +587,30 @@ class UnitTests(unittest.TestCase):
 
     def test_images_and_context_pick_a_measured_layout(self):
         L = self.llm
-        cases = {('0', '262144'): ("CTX='524288'", "MMPROJ='0'", "MOE_CACHE_MIB='70430'", "DMA='0'"),
-                 ('1', '64K'): ("CTX='131072'", "MMPROJ='1'", "MOE_CACHE_MIB='70430'", "DMA='0'"),
-                 ('0', '32k'): ("CTX='65536'", "MMPROJ='0'", "MOE_CACHE_MIB='74231'", "DMA='1'"),
-                 ('0', '131072'): ("CTX='262144'", "UBATCH='3072'", "MMPROJ='0'", "DMA='1'")}
+        basalt_cases = {('0', '262144'): ("ENGINE='basalt'", "CTX='524288'", "MMPROJ='0'", "VRAM_RESERVE='700'"),
+                        ('1', '64K'): ("ENGINE='basalt'", "CTX='131072'", "MMPROJ='1'", "VRAM_RESERVE='700'"),
+                        ('0', '32k'): ("ENGINE='basalt'", "CTX='65536'", "MMPROJ='0'", "VRAM_RESERVE='700'"),
+                        ('0', '131072'): ("ENGINE='basalt'", "CTX='262144'", "UBATCH='2048'", "MMPROJ='0'", "VRAM_RESERVE='700'")}
+        llama_cases = {('0', '262144'): ("ENGINE='llama'", "CTX='524288'", "MMPROJ='0'", "MOE_CACHE_MIB='70430'", "DMA='0'"),
+                       ('1', '64K'): ("ENGINE='llama'", "CTX='131072'", "MMPROJ='1'", "MOE_CACHE_MIB='70430'", "DMA='0'"),
+                       ('0', '32k'): ("ENGINE='llama'", "CTX='65536'", "MMPROJ='0'", "MOE_CACHE_MIB='74231'", "DMA='1'"),
+                       ('0', '131072'): ("ENGINE='llama'", "CTX='262144'", "UBATCH='3072'", "MMPROJ='0'", "DMA='1'")}
         try:
-            for (images, context), want in cases.items():
+            for (images, context), want in basalt_cases.items():
                 os.environ['LLM_IMAGES'], os.environ['LLM_CONTEXT'] = images, context
                 envs = L.boot_env()
                 for w in want:
-                    self.assertIn(w, envs, (images, context))
+                    self.assertIn(w, envs, ('basalt', images, context))
+            os.environ['LLM_ENGINE'] = 'llama'
+            for (images, context), want in llama_cases.items():
+                os.environ['LLM_IMAGES'], os.environ['LLM_CONTEXT'] = images, context
+                envs = L.boot_env()
+                for w in want:
+                    self.assertIn(w, envs, ('llama', images, context))
         finally:
-            del os.environ['LLM_IMAGES'], os.environ['LLM_CONTEXT']
+            os.environ.pop('LLM_IMAGES', None)
+            os.environ.pop('LLM_CONTEXT', None)
+            os.environ.pop('LLM_ENGINE', None)
         self.assertEqual([L.context_value(v) for v in ('300000', '5000', '262K', 'abc', '4095')], [None, 5120, 262144, None, None])
 
     def test_boot_env(self):
@@ -592,7 +622,7 @@ class UnitTests(unittest.TestCase):
             self.assertIn("MMPROJ='1'", envs)
             self.assertIn("DRAFT='0' X_A='1'", envs)
             os.environ['LLM_PROFILE'] = 'fast'
-            self.assertIn("CTX='262144' UBATCH='3072' MMPROJ='0'", L.boot_env())
+            self.assertIn("CTX='262144' UBATCH='2048' MMPROJ='0'", L.boot_env())
             del os.environ['LLM_PROFILE']
             self.assertIn("(%s setsid nohup bash vm/boot.sh" % envs, L.boot_cmd(envs))
             os.environ['LLM_BOOT_ENV'] = "A=it's"
@@ -673,6 +703,115 @@ class UnitTests(unittest.TestCase):
         p.wait()
         p.stderr.close()
         self.assertEqual(hits, [1])
+
+    def test_basalt_layouts_jobs_abliterate_and_effort(self):
+        import re, struct, zipfile
+        L = self.llm
+        envs = L.boot_env()
+        self.assertIn("ENGINE='basalt'", envs)
+        self.assertIn("QUANT='iq1_m'", envs)
+        self.assertIn("VRAM_RESERVE='700'", envs)
+        rewritten = json.loads(L.with_effort(json.dumps({'model': 'ds41-max', 'messages': []}).encode()))
+        self.assertEqual((rewritten['model'], rewritten['reasoning_effort']), ('ds41', 'max'))
+        resp_req = json.loads(L.with_effort(json.dumps({'model': 'ds41-max', 'input': 'hi'}).encode(), '/v1/responses'))
+        self.assertEqual((resp_req['model'], resp_req['reasoning']), ('ds41', {'effort': 'max'}))
+        self.assertNotIn('reasoning_effort', resp_req)
+        anth_req = json.loads(L.with_effort(json.dumps({'model': 'ds41-max', 'messages': []}).encode(), '/v1/messages'))
+        self.assertEqual(anth_req['model'], 'ds41')
+        self.assertNotIn('reasoning_effort', anth_req)
+        self.assertIn('160.4 tok/s', L.speed_note(True, 262144, 'basalt'))
+        self.assertIn('160.4 tok/s', L.speed_note(False, 131072, 'basalt'))
+        self.assertIn('105.6 tok/s', L.speed_note(True, 262144, 'llama'))
+
+        os.environ['LLM_ENGINE'] = 'llama'
+        try:
+            keep_llama = json.loads(L.with_effort(json.dumps({'model': 'ds41-max', 'messages': []}).encode()))
+            self.assertEqual((keep_llama['model'], keep_llama['reasoning_effort']), ('ds41-max', 'max'))
+        finally:
+            os.environ.pop('LLM_ENGINE', None)
+
+        # Verify serve_basalt.sh v2 config schema (answer-room & idle-unload in models[0], conversation cache in engine)
+        serve_basalt = read(os.path.join(VM_DIR, 'serve_basalt.sh'))
+        m = re.search(r"python3 - \"\$R/basalt_config\.json\" <<'EOF'\n(.*?)\nEOF", serve_basalt, re.S)
+        self.assertIsNotNone(m)
+        cfg_path = os.path.join(self.dir, 'basalt_config.json')
+        env = dict(os.environ, PORT='18081', CTX='524288', MMPROJ='1', DRAFT='1', VRAM_RESERVE='700',
+                   RAM_BUDGET='55', DRAFT_EXPERTS='32', SPEC_MAX='6', ANSWER_ROOM='0',
+                   CONV_CACHE_MIB='32768', CONV_CACHE_DIR='/content/conv_cache',
+                   MODEL_PATH='/mnt/ram/model.basalt', ENGRAM_PATH='/mnt/ram/engram.bin')
+        r = subprocess.run([PY, '-c', m.group(1), cfg_path], env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        cfg = json.loads(read(cfg_path))
+        self.assertEqual(cfg['version'], 2)
+        self.assertNotIn('answer-room', cfg['server'])
+        self.assertNotIn('idle-unload', cfg['server'])
+        self.assertEqual((cfg['models'][0]['alias'], cfg['models'][0]['answer-room'], cfg['models'][0]['idle-unload']), ('ds41', 0, 0))
+        self.assertEqual((cfg['engine']['conversation-cache-disk-mib'], cfg['engine']['conversation-cache-dir']), (32768, '/content/conv_cache'))
+
+        # Verify vm/basalt_jobs.py + punch_sections + vm/abliterate_basalt.py against a synthetic BASALTMF v2 pack
+        sys.path.insert(0, VM_DIR)
+        try:
+            bj = importlib.import_module('basalt_jobs')
+            ab = importlib.import_module('abliterate_basalt')
+            hdr = bytearray(65536)
+            sections = [
+                ('meta', 65536, 4096),
+                ('gguf', 131072, 1048576),
+                ('dspark/gguf', 1179648, 262144),
+                ('vision/mmproj', 1441792, 65536),
+                ('experts', 2097152, 4194304),
+                ('engram', 8388608, 16777216),
+            ]
+            file_bytes = 8388608 + 16777216
+            struct.pack_into('<8sIIQ', hdr, 0, b'BASALTMF', 2, len(sections), file_bytes)
+            for i, (name, soff, sbytes) in enumerate(sections):
+                struct.pack_into('<64sQQ', hdr, 64 + i * 128, name.encode(), soff, sbytes)
+            fb, parsed = bj.parse_header(bytes(hdr))
+            self.assertEqual(fb, file_bytes)
+            bb_jobs, eng_jobs = bj.build_jobs('https://example.test/m.basalt', fb, parsed, '/mnt/ram/model.basalt', '/mnt/ram/engram.bin')
+            self.assertEqual(len(eng_jobs), 1)
+            self.assertEqual((eng_jobs[0]['src_off'], eng_jobs[0]['dest_off'], eng_jobs[0]['size']), (8388608, 0, 16777216))
+            self.assertEqual(sum(j['size'] for j in bb_jobs), 65536 + 4096 + 1048576 + 262144 + 65536 + 4194304)
+
+            if sys.platform.startswith('linux'):
+                pack_file = os.path.join(self.dir, 'punch_test.basalt')
+                with open(pack_file, 'wb') as f:
+                    f.write(hdr)
+                    f.seek(1179648)
+                    f.write(b'\xAA' * 262144)
+                    f.seek(1441792)
+                    f.write(b'\x55' * 65536)
+                blocks_before = os.stat(pack_file).st_blocks
+                freed = bj.punch_sections(pack_file, {'dspark/gguf'})
+                blocks_after = os.stat(pack_file).st_blocks
+                self.assertEqual(freed, 262144)
+                self.assertLess(blocks_after, blocks_before)
+                with open(pack_file, 'rb') as f:
+                    f.seek(1179648)
+                    self.assertEqual(f.read(4096), b'\x00' * 4096)
+                    f.seek(1441792)
+                    self.assertEqual(f.read(4096), b'\x55' * 4096)
+
+            dim = 4
+            def npy(shape, fortran, vals):
+                h = ("{'descr': '<f4', 'fortran_order': %s, 'shape': %r, }" % (fortran, shape)).encode()
+                h = h + b' ' * ((64 - (10 + len(h) + 1) % 64) % 64) + b'\n'
+                return b'\x93NUMPY\x01\x00' + struct.pack('<H', len(h)) + h + struct.pack('<%df' % len(vals), *vals)
+            npz_path = os.path.join(self.dir, 'b_edit.npz')
+            with zipfile.ZipFile(npz_path, 'w') as zf:
+                zf.writestr('Q.npy', npy((dim, 2), True, [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]))
+                zf.writestr('scales.npy', npy((2, 2), False, [0.5, 0.0, 0.0, 0.75]))
+            _, secs = ab.parse_basalt_header(bytes(hdr))
+            meta = {'tensors': {
+                'blk.0.attn_output_b.weight': {'section': 'gguf', 'offset': 0, 'bytes': 210 * dim, 'shape': [256, dim], 'type_id': 14},
+                'blk.1.ffn_down_shexp.weight': {'section': 'gguf', 'offset': 4096, 'bytes': 176 * dim, 'shape': [256, dim], 'type_id': 13},
+            }}
+            _, _, _, plan = ab.build_plan_from_meta('/mnt/ram/model.basalt', secs, meta, npz_path)
+            self.assertEqual([(p[1], p[2], p[5], p[7]) for p in plan],
+                             [('blk.0.attn_output_b.weight', 14, 131072, 0.5),
+                              ('blk.1.ffn_down_shexp.weight', 13, 131072 + 4096, 0.75)])
+        finally:
+            sys.path.remove(VM_DIR)
 
 
 if __name__ == '__main__':

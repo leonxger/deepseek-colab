@@ -1,6 +1,7 @@
 #!/bin/bash
 # Cold start on a Colab G4: weights into RAM, llama.cpp built, server up, VRAM copies freed, Engram filled, then the gate opens port 18080.
 set -uo pipefail
+[ "${ENGINE:-basalt}" = basalt ] && exec bash /content/vm/boot_basalt.sh
 : "${CTX:?} ${UBATCH:?} ${MOE_CACHE_MIB:?} ${DYN:?} ${MMPROJ:?}"
 export RUNG=IQ2_XXS PORT=18081 DRAFT=${DRAFT:-1} UNCENSOR=${UNCENSOR:-1} WORKERS=${WORKERS:-64}
 export LLAMA_DSV41_CED=1 LLAMA_DSV41_CED_SPEC=1

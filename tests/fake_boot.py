@@ -17,10 +17,12 @@ def st(msg):
 def main():
     with open(os.path.join(R, 'boot.pgid'), 'w') as f:
         f.write(str(os.getpgid(0)))
-    env = {k: v for k, v in os.environ.items() if k in ('CTX', 'UBATCH', 'MMPROJ', 'MOE_CACHE_MIB', 'DYN', 'DRAFT', 'UNCENSOR') or k.startswith('X_')}
+    env = {k: v for k, v in os.environ.items() if k in ('ENGINE', 'QUANT', 'CTX', 'UBATCH', 'MMPROJ', 'MOE_CACHE_MIB', 'DYN', 'DMA', 'VRAM_RESERVE', 'RAM_BUDGET', 'DRAFT', 'UNCENSOR') or k.startswith('X_')}
     env['FAKE_MODE'] = MODE
     files = [os.path.relpath(os.path.join(d, f), C) for d, _, fs in os.walk(V) for f in fs]
-    want = ['secrets/key', 'vm/libpin.so', 'vm/boot.sh', 'vm/serve.sh', 'vm/build.sh', 'vm/patches/series']
+    want = ['secrets/key', 'vm/libpin.so', 'vm/boot.sh', 'vm/serve.sh', 'vm/build.sh',
+            'vm/boot_basalt.sh', 'vm/serve_basalt.sh', 'vm/build_basalt.sh', 'vm/patch_basalt.py',
+            'vm/basalt_jobs.py', 'vm/abliterate_basalt.py', 'vm/abliterate.c', 'vm/patches/series']
     check = {'missing': [p for p in want if not os.path.exists(os.path.join(C, p))],
              'crlf': [f for f in files + ['secrets/key'] if b'\r' in open(os.path.join(C, f), 'rb').read()],
              'secrets': sorted(os.listdir(os.path.join(C, 'secrets'))),
@@ -34,7 +36,17 @@ def main():
         st('backbone FAILED')
         st('fetch FAILED, stopping')
         return 1
-    st('backbone fetched')
+    if env.get('ENGINE') == 'basalt':
+        st('basalt built')
+        if env.get('UNCENSOR', '1') == '1':
+            st('abliteration edit fetched')
+        st('backbone fetched (basalt %s)' % env.get('QUANT', 'iq1_m'))
+        if env.get('UNCENSOR', '1') == '1':
+            st('abliteration applied')
+        st('weights loaded')
+        st('pin: VRAM 92000 MiB, model 1.7G')
+    else:
+        st('backbone fetched')
     port = os.environ['FAKE_VM_INNER_PORT']
     with open(os.path.join(R, 'server.log'), 'w') as log:
         p = subprocess.Popen([sys.executable, os.path.join(TESTS, 'mock_llama.py'), port, '0.5'],
@@ -47,7 +59,7 @@ def main():
         try:
             with urllib.request.urlopen('http://127.0.0.1:%s/health' % port, timeout=2) as r:
                 if r.status == 200:
-                    st('healthy')
+                    st('basalt http ready' if env.get('ENGINE') == 'basalt' else 'healthy')
                     break
         except OSError:
             pass

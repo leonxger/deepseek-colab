@@ -8,20 +8,22 @@ import hmac, http.client, io, json, os, re, secrets, shlex, shutil, signal, sock
 import threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-USAGE = '''usage: python3 llm.py COMMAND [--fast]
+USAGE = '''usage: python3 llm.py COMMAND [--fast] [--basalt|--llama]
   up            set up on first use, start the GPU and print the endpoint (base URL, API key, models)
   down          stop the GPU and the local endpoint
   status        endpoint state, Colab balance and session
   watch         live view: GPU on or off, idle countdown to the auto-stop, cost so far (up shows it too)
-  settings      change the saved defaults: image input, context, reasoning effort, idle stop, hard stop, uncensored
+  settings      change the saved defaults: engine, image input, context, reasoning effort, idle stop, hard stop, uncensored
   ask TEXT      send one question and stream the answer (--max for reasoning effort max)
   opencode ...  start opencode with this endpoint configured, in any shell; arguments go to opencode
   logs          local log plus the GPU's boot timeline and server log
   setup         install and log in only, start nothing
   serve         run the endpoint in the foreground (Ctrl+C stops the GPU too)
-  --fast        this run only: text only, 131K context, the faster layout (118.7 instead of 105.6 tok/s)
+  --fast        this run only: text only, 131K context, the faster layout
+  --basalt      this run only: Basalt v0.5.7 + UD-IQ1_M.basalt with abliteration (default, ~160 tok/s)
+  --llama       this run only: legacy llama.cpp + ISTA IQ2_XXS GGUF (105.6 / 118.7 tok/s)
 env: LLM_PORT (18080) LLM_IDLE_MIN (10) LLM_MAX_HOURS (6) LLM_MIN_BALANCE (5) LLM_IMAGES (0|1) LLM_CONTEXT (4096-262144)
-     LLM_PROFILE (default|fast presets) LLM_BIND (127.0.0.1)
+     LLM_PROFILE (default|fast presets) LLM_ENGINE (basalt|llama) LLM_BIND (127.0.0.1)
      HF_TOKEN (optional Hugging Face token for the downloads) LLM_YES=1 (answer yes to install prompts) LLM_BOOT_ENV ("K=V ...")
      LLM_SESSION LLM_COLAB LLM_STATE LLM_VM_DIR; tests: LLM_SSH_CMD LLM_TUNNEL_PORT LLM_POLL_S'''
 
@@ -32,7 +34,7 @@ KEY_FILE, SSH_KEY = os.path.join(STATE, 'api_key'), os.path.join(STATE, 'id_ed25
 SESSION, LOCK, LOG = (os.path.join(STATE, f) for f in ('session.json', 'serve.lock', 'llm.log'))
 SETTINGS_FILE = os.path.join(STATE, 'settings.json')
 VM_DIR = os.path.abspath(os.environ.get('LLM_VM_DIR') or os.path.join(ROOT, 'vm'))
-DEFAULTS = {'images': True, 'context': 262144, 'effort': '50', 'idle_min': 10, 'max_hours': 6, 'uncensor': True}
+DEFAULTS = {'engine': 'basalt', 'images': True, 'context': 262144, 'effort': '50', 'idle_min': 10, 'max_hours': 6, 'uncensor': True}
 
 
 def load_settings():
@@ -59,11 +61,23 @@ HEALTH_S = min(1.0, POLL_S)
 BOOT_TIMEOUT, FAIL_COOLDOWN, KEEPALIVE_S, MAX_BODY, UPSTREAM_TIMEOUT = 1500, 60, 5, 64 << 20, 3600
 COLAB_CLI = 'google-colab-cli==0.7.5'
 G4_CU_PER_HOUR = 8.9
-# the two GPU memory layouts measured on the G4: 'default' fits images and 262K per request, 'fast' text only up to 131K
-LAYOUTS = {'default': {'UBATCH': '2048', 'MOE_CACHE_MIB': '70430', 'DYN': '110', 'DMA': '0', 'SPEED': '105.6'},
-           'fast': {'UBATCH': '3072', 'MOE_CACHE_MIB': '74231', 'DYN': '166', 'DMA': '1', 'SPEED': '118.7'}}
+# Legacy llama.cpp GPU memory layouts on G4 (kept intact for --llama fallback)
+LAYOUTS = {'default': {'ENGINE': 'llama', 'UBATCH': '2048', 'MOE_CACHE_MIB': '70430', 'DYN': '110', 'DMA': '0', 'SPEED': '105.6'},
+           'fast': {'ENGINE': 'llama', 'UBATCH': '3072', 'MOE_CACHE_MIB': '74231', 'DYN': '166', 'DMA': '1', 'SPEED': '118.7'}}
+# Default backend: Basalt v0.5.7 (160.4 tok/s solo, 95-98.7% VRAM expert hit rate, dynamic 0-idle-VRAM vision, elastic FP8 KV)
+_BASALT_DEFAULT = {'ENGINE': 'basalt', 'QUANT': 'iq1_m', 'UBATCH': '2048', 'MOE_CACHE_MIB': '77700', 'DYN': '0', 'DMA': '1',
+                   'VRAM_RESERVE': '700', 'RAM_BUDGET': '55', 'SPEED': '160.4'}
+ENGINE_LAYOUTS = {
+    'basalt': {'default': _BASALT_DEFAULT, 'fast': _BASALT_DEFAULT},
+    'llama': LAYOUTS,
+}
+ENGINE_NAMES = {
+    'basalt': 'Basalt v0.5.7 (UD-IQ1_M)',
+    'llama': 'llama.cpp (ISTA IQ2_XXS)',
+}
 CONTEXTS = {'32k': 32768, '64k': 65536, '128k': 131072, '131k': 131072, '256k': 262144, '262k': 262144}
-BOOT_KEYS = ('CTX', 'UBATCH', 'MMPROJ', 'MOE_CACHE_MIB', 'DYN', 'DMA', 'DRAFT', 'UNCENSOR', 'WORKERS')
+BOOT_KEYS = ('ENGINE', 'QUANT', 'CTX', 'UBATCH', 'MMPROJ', 'MOE_CACHE_MIB', 'DYN', 'DMA', 'VRAM_RESERVE', 'RAM_BUDGET',
+             'DRAFT', 'UNCENSOR', 'WORKERS')
 VM_PORT = 18080
 NO_WINDOW, DETACHED, NEW_GROUP, BREAKAWAY = 0x08000000, 0x00000008, 0x00000200, 0x01000000
 CHILD_FLAGS = NO_WINDOW if IS_WIN else 0
@@ -72,9 +86,14 @@ HOP = {'connection', 'keep-alive', 'proxy-connection', 'proxy-authorization', 't
        'content-length', 'host', 'accept-encoding', 'expect', 'server', 'date'}
 STEPS = (('encoder', r'image encoder fetched', 'image encoder downloaded (1 GB)'),
          ('patch', r'uncensor patch fetched', 'uncensored tensors downloaded (1.7 GB)'),
+         ('patch', r'abliteration edit fetched', 'abliteration edit downloaded (43 KB)'),
          ('draft', r'draft fetched', 'draft model downloaded (8 GB)'),
-         ('model', r'backbone fetched', 'model downloaded (138 GB)'),
+         ('model', r'backbone fetched \(basalt [^)]+\)', 'model downloaded (Basalt pack)'),
+         ('model', r'backbone fetched$', 'model downloaded (138 GB)'),
+         ('build', r'basalt built', 'Basalt v0.5.7 built'),
          ('build', r'llama\.cpp built', 'llama.cpp built'),
+         ('abliterate', r'abliteration applied', 'abliteration baked into weights'),
+         ('loaded', r'weights loaded', 'model loaded onto the GPU + RAM'),
          ('loaded', r'healthy', 'model loaded onto the GPU'),
          ('pinned', r'pin: ', 'RAM freed, cold experts pinned'),
          ('engram', r'engram done', 'Engram table loaded (110 GB)'),
@@ -239,12 +258,30 @@ def model_efforts():
     return (('ds41', str(SETTINGS['effort'])), ('ds41-max', 'max'))
 
 
+def engine_value(text):
+    t = (text or '').strip().lower()
+    return t if t in ENGINE_LAYOUTS else None
+
+
+def engine_choice():
+    raw = os.environ.get('LLM_ENGINE') or SETTINGS.get('engine') or 'basalt'
+    e = engine_value(raw)
+    if not e:
+        sys.exit('unknown LLM_ENGINE %r (use basalt or llama)' % raw)
+    return e
+
+
 def profile():
-    """Boot values for the chosen images and context; CTX is the total of the 2 request slots."""
+    """Boot values for the chosen engine, images and context; CTX is the total of the 2 request slots."""
     images, context = choice()
-    lay = LAYOUTS[layout(images, context)]
-    return {'CTX': str(2 * context), 'UBATCH': lay['UBATCH'], 'MMPROJ': '1' if images else '0', 'MOE_CACHE_MIB': lay['MOE_CACHE_MIB'],
-            'DYN': lay['DYN'], 'DMA': lay['DMA']}
+    eng = engine_choice()
+    lay = ENGINE_LAYOUTS[eng][layout(images, context)]
+    out = {'ENGINE': lay['ENGINE'], 'CTX': str(2 * context), 'UBATCH': lay['UBATCH'], 'MMPROJ': '1' if images else '0',
+           'MOE_CACHE_MIB': lay['MOE_CACHE_MIB'], 'DYN': lay['DYN'], 'DMA': lay['DMA']}
+    for k in ('QUANT', 'VRAM_RESERVE', 'RAM_BUDGET'):
+        if k in lay:
+            out[k] = lay[k]
+    return out
 
 
 COLAB = colab_cmd()
@@ -547,15 +584,16 @@ def vm_files():
 
 
 def missing_vm_files():
-    """Files that boot.sh, serve.sh, build.sh or patches/series name but vm/ lacks; a start is refused before allocation."""
+    """Files that boot/serve/build scripts or patches/series name but vm/ lacks; a start is refused before allocation."""
     have, refs = set(vm_files()), set()
-    for f in ('boot.sh', 'serve.sh', 'build.sh'):
+    scripts = ('boot.sh', 'serve.sh', 'build.sh', 'boot_basalt.sh', 'serve_basalt.sh', 'build_basalt.sh')
+    for f in scripts:
         try:
             with open(os.path.join(VM_DIR, f), encoding='utf-8', errors='replace') as fh:
                 refs |= set(re.findall(r'(?:\$V|/content/vm)/([\w.-]+\.(?:py|sh|txt|c))\b', fh.read()))
         except OSError:
             refs.add(f)
-    refs |= {f for f in ('boot.sh', 'serve.sh', 'build.sh', 'patches/series')}
+    refs |= set(scripts) | {'patches/series'}
     if 'patches/series' in have:
         with open(os.path.join(VM_DIR, 'patches', 'series'), encoding='utf-8') as fh:
             refs |= {'patches/' + l.strip() for l in fh if l.strip() and not l.startswith('#')}
@@ -844,7 +882,8 @@ class Manager:
             return 'allocating a G4 GPU'
         if 'uploaded' not in done:
             return 'uploading the boot files'
-        todo = [w for k, w in (('model', 'downloading the model'), ('build', 'building llama.cpp')) if k not in done]
+        build_label = 'building Basalt' if profile().get('ENGINE') == 'basalt' else 'building llama.cpp'
+        todo = [w for k, w in (('model', 'downloading the model'), ('build', build_label)) if k not in done]
         rest = [w for k, w in LATER if k not in done]
         todo = [] if len(rest) < len(LATER) else todo
         return ' and '.join(todo) if todo else rest[0] if rest else 'opening the endpoint'
@@ -927,7 +966,8 @@ class Manager:
             raise StartError('boot start failed: ' + out.strip()[-300:])
         self._stage(s, 'boot_started', t0)
         self.steps.append(('uploaded', time.time(), None))
-        log('boot started on the GPU VM after %.0f s; ready in about 4 minutes' % s['stages']['boot_started'])
+        eta = '2-3 minutes' if profile().get('ENGINE') == 'basalt' else '4 minutes'
+        log('boot started on the GPU VM after %.0f s; ready in about %s' % (s['stages']['boot_started'], eta))
         return s
 
     def _await_ready(self, s, adopted):
@@ -1103,19 +1143,34 @@ class Manager:
                     'started': s.get('started'), 'stages': s.get('stages'), 'last_error': self.fail_msg or None, 'pid': os.getpid()}
 
 
-def with_effort(body):
+def with_effort(body, path='/v1/chat/completions'):
     """The model name ds41-max means reasoning effort max for clients that do not send reasoning_effort themselves."""
     try:
         req = json.loads(body)
     except ValueError:
         return body
-    if not isinstance(req, dict) or req.get('reasoning_effort') is not None:
+    if not isinstance(req, dict):
         return body
-    effort = dict(model_efforts()).get(req.get('model'))
-    if effort is None or effort == '50':
-        return body
-    req['reasoning_effort'] = effort
-    return json.dumps(req).encode()
+    changed = False
+    model = req.get('model')
+    effort = dict(model_efforts()).get(model)
+    if effort is not None and effort != '50':
+        if path == '/v1/chat/completions' and req.get('reasoning_effort') is None:
+            req['reasoning_effort'] = effort
+            changed = True
+        elif path == '/v1/responses':
+            reasoning = req.get('reasoning')
+            if reasoning is None:
+                req['reasoning'] = {'effort': effort}
+                changed = True
+            elif isinstance(reasoning, dict) and reasoning.get('effort') is None:
+                req['reasoning'] = dict(reasoning, effort=effort)
+                changed = True
+    # Basalt serves a single alias ("ds41") and returns 404 for unknown model names like "ds41-max"
+    if model == 'ds41-max' and ENGINE_LAYOUTS[engine_choice()]['default']['ENGINE'] == 'basalt':
+        req['model'] = 'ds41'
+        changed = True
+    return json.dumps(req).encode() if changed else body
 
 
 def error_obj(code, msg, kind='unavailable_error'):
@@ -1165,8 +1220,10 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def authed(self):
+        key = api_key().encode()
         got = self.headers.get('Authorization', '').encode()
-        if hmac.compare_digest(got, ('Bearer ' + api_key()).encode()):
+        xkey = self.headers.get('x-api-key', '').encode()
+        if hmac.compare_digest(got, b'Bearer ' + key) or (xkey and hmac.compare_digest(xkey, key)):
             return True
         self.send_json(401, error_obj(401, 'Invalid API Key', 'authentication_error'))
         return False
@@ -1226,8 +1283,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.authed():
                 self.send_json(200, self.models())
             return
-        if body and path == '/v1/chat/completions':
-            body = with_effort(body)
+        if body and path in ('/v1/chat/completions', '/v1/messages', '/v1/messages/count_tokens', '/v1/responses'):
+            body = with_effort(body, path)
         if body is not None and path.startswith('/v1/'):
             if self.authed():
                 t0 = time.time()
@@ -1409,7 +1466,7 @@ def serve(detached=False):
     if not os.path.exists(KEY_FILE):
         sys.exit('missing %s; run: python3 llm.py setup' % KEY_FILE)
     profile()
-    held = take_lock({'port': PORT, 'detached': detached, 'choice': list(choice())})
+    held = take_lock({'port': PORT, 'detached': detached, 'choice': list(choice()), 'engine': engine_choice()})
     if held:
         sys.exit('llm.py serve is already running (pid %s, port %s)' % (held.get('pid'), held.get('port')))
     try:
@@ -1513,16 +1570,18 @@ def yes_no(text):
     return {'y': True, 'yes': True, 'n': False, 'no': False}.get(text)
 
 
-def speed_note(images, context):
+def speed_note(images, context, engine=None):
     """What the chosen pair runs at, and why a smaller context alone is not faster."""
-    note = 'about %s tok/s' % LAYOUTS[layout(images, context)]['SPEED']
+    layouts = ENGINE_LAYOUTS[engine or engine_choice()]
+    note = 'about %s tok/s' % layouts[layout(images, context)]['SPEED']
     if images:
         return note + ' · smaller contexts work but are not faster'
-    return note + ('' if context <= 131072 else ' · text only up to 131K runs at %s tok/s' % LAYOUTS['fast']['SPEED'])
+    return note + ('' if context <= 131072 else ' · text only up to 131K runs at %s tok/s' % layouts['fast']['SPEED'])
 
 
 def settings_summary():
-    return ' · '.join((describe(*choice()), 'effort %s' % SETTINGS['effort'], 'idle stop %g min' % IDLE_MIN, 'hard stop %g h' % MAX_HOURS,
+    return ' · '.join((ENGINE_NAMES[engine_choice()], describe(*choice()), 'effort %s' % SETTINGS['effort'],
+                       'idle stop %g min' % IDLE_MIN, 'hard stop %g h' % MAX_HOURS,
                        'uncensored' if SETTINGS['uncensor'] else 'original model'))
 
 
@@ -1542,9 +1601,10 @@ def choose_settings(force=False):
             return
     print('%s  %s\n' % (paint('Settings', 'bold'), paint('Enter keeps the value in brackets', 'dim')))
     old, new = SETTINGS, dict(SETTINGS)
+    new['engine'] = pick('Engine', 'basalt or llama', old.get('engine', 'basalt'), engine_value)
     new['images'] = pick('Images', 'image input, y or n', 'y' if old['images'] else 'n', yes_no)
     new['context'] = pick('Context', '32K, 64K, 131K or 262K', short_context(context_value(old['context']) or 262144), context_value)
-    print('  %s%s' % (' ' * 12, paint(speed_note(new['images'], new['context']), 'dim')))
+    print('  %s%s' % (' ' * 12, paint(speed_note(new['images'], new['context'], new['engine']), 'dim')))
     new['effort'] = pick('Effort', 'ds41: 1-100, low, high, max', old['effort'], effort_value)
     new['idle_min'] = pick('Idle stop', 'minutes, 1-120', old['idle_min'], lambda t: number(t, 1, 120))
     new['max_hours'] = pick('Hard stop', 'hours, 1-24', old['max_hours'], lambda t: number(t, 1, 24))
@@ -1563,6 +1623,7 @@ def watch(port):
         return
     print(paint('\n  Ctrl+C closes this view; the endpoint keeps running.\n', 'dim'))
     live, prev, dots = Live(), None, (glyph('●', '*'), glyph('◌', '~'), glyph('○', 'o'))
+    eta = '2-3 minutes' if profile().get('ENGINE') == 'basalt' else '4 minutes'
     try:
         while True:
             try:
@@ -1586,7 +1647,7 @@ def watch(port):
                 what = 'starting · ' + st['stage'] if state == 'starting' else 'stopping'
                 live.put([('  ', ()), (dots[1] + ' GPU ' + what, ('cyan',)), ('   ' + spent, ('dim',))])
             else:
-                live.put([('  ', ()), (dots[2] + ' GPU off', ('bold',)), ('   starts on the next request, about 4 minutes', ('dim',))])
+                live.put([('  ', ()), (dots[2] + ' GPU off', ('bold',)), ('   starts on the next request, about ' + eta, ('dim',))])
             time.sleep(1)
     except KeyboardInterrupt:
         live.clear()
@@ -1709,11 +1770,13 @@ def write_opencode(port=PORT):
 
 
 def endpoint_info(port, bal=None):
-    info, me_cmd = profile(), cli()
+    info, me_cmd, eng = profile(), cli(), engine_choice()
     rows = (('Base URL', 'http://%s:%d/v1' % (HOST, port)), ('API key', api_key()),
+            ('Engine', ENGINE_NAMES[eng]),
             ('Models', 'ds41 (effort %s) · ds41-max (effort max)' % SETTINGS['effort']),
             ('Context', '%s tokens per request · image input %s · about %s tok/s' % (
-                '{:,}'.format(int(info['CTX']) // 2), 'on' if info['MMPROJ'] == '1' else 'off', LAYOUTS[layout(*choice())]['SPEED'])))
+                '{:,}'.format(int(info['CTX']) // 2), 'on' if info['MMPROJ'] == '1' else 'off',
+                ENGINE_LAYOUTS[eng][layout(*choice())]['SPEED'])))
     print()
     for name, value in rows:
         print('  %-10s %s' % (name, paint(value, 'bold')))
@@ -1743,9 +1806,11 @@ def cmd_up():
     print(paint('DeepSeek V4.1 Flash on Colab', 'bold') + '\n')
     bal = setup()
     held = serve_running()
-    if held and held.get('choice') != list(choice()):
-        sys.exit('The endpoint runs with %s. To change that, stop it first: %s down'
-                 % (describe(*held['choice']) if held.get('choice') else 'other settings', cli()))
+    if held and (held.get('choice') != list(choice()) or held.get('engine', 'basalt') != engine_choice()):
+        have = describe(*held['choice']) if held.get('choice') else 'other settings'
+        if held.get('engine'):
+            have = ENGINE_NAMES.get(held['engine'], held['engine']) + ' · ' + have
+        sys.exit('The endpoint runs with %s. To change that, stop it first: %s down' % (have, cli()))
     if bal < MIN_BALANCE and not (held and load_session()):
         sys.exit('Colab balance %.2f compute units is below LLM_MIN_BALANCE %.0f' % (bal, MIN_BALANCE))
     if not held:
@@ -1759,7 +1824,8 @@ def cmd_up():
             time.sleep(0.3)
             held = serve_running()
     conn, r = control_call(held['port'], '/_llm/up', {}, 120)
-    kind, rest = follow(r, paint('Starting a Colab G4 GPU', 'bold') + paint(' · about 4 minutes', 'dim'))
+    eta = '2-3 minutes' if profile().get('ENGINE') == 'basalt' else '4 minutes'
+    kind, rest = follow(r, paint('Starting a Colab G4 GPU', 'bold') + paint(' · about ' + eta, 'dim'))
     conn.close()
     if kind != 'READY':
         print(paint('Start failed: ' + (rest or 'the local endpoint closed the connection'), 'red'))
@@ -1833,7 +1899,7 @@ def cmd_logs():
     raw = _read(LOG)
     print(redact(raw.decode('utf-8', 'replace')[-3000:]) if raw is not None else '(no local log)')
     if session_alive():
-        rc, out = vmx('cat /content/res/timeline.txt; tail -n 25 /content/res/server.log', 40)
+        rc, out = vmx('cat /content/res/timeline.txt; tail -n 25 /content/res/server.log; tail -n 15 /root/.cache/basalt/*/engine.log 2>/dev/null || true', 40)
         print(redact(out))
 
 
@@ -1869,7 +1935,7 @@ def cmd_ask(words):
         line = raw.decode('utf-8', 'replace').strip()
         wait = re.match(r': starting gpu vm \((\d+) s\)', line)
         if wait:
-            live.show(mmss(wait.group(1)), 'starting the GPU, about 4 minutes')
+            live.show(mmss(wait.group(1)), 'starting the GPU, about 2-3 minutes')
         if not line.startswith('data: {'):
             continue
         event = json.loads(line[6:])
@@ -1923,6 +1989,10 @@ def main():
         sys.stdout.reconfigure(errors='replace')
     if '--fast' in args and cmd not in ('ask', 'opencode'):
         os.environ['LLM_PROFILE'] = CHILD_ENV['LLM_PROFILE'] = 'fast'
+    if '--basalt' in args and cmd not in ('ask', 'opencode'):
+        os.environ['LLM_ENGINE'] = CHILD_ENV['LLM_ENGINE'] = 'basalt'
+    elif '--llama' in args and cmd not in ('ask', 'opencode'):
+        os.environ['LLM_ENGINE'] = CHILD_ENV['LLM_ENGINE'] = 'llama'
     os.makedirs(STATE, mode=0o700, exist_ok=True)
     init_console()
     commands = {'up': cmd_up, 'down': lambda: cmd_down('--all' in args), 'status': cmd_status, 'logs': cmd_logs, 'setup': cmd_setup,
